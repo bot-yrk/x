@@ -1,4 +1,4 @@
-import os, time, random, string, threading, base64
+import os, time, random, string, threading, base64, html
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
@@ -12,13 +12,41 @@ BASIC = base64.b64encode(f"{CID}:ucPjka5tntB2KqsP".encode()).decode()
 REDIRECT = "com.scee.psxandroid.scecompcall://redirect"
 SCOPE = "psn:mobile.v2.core psn:clientapp"
 DELAY = 5  # ثواني بين كل تجربة
+LINE = "━━━━━━━━━━━━━━"
 
 token = {"v": None, "exp": 0}
-state = {"run": False}
+state = {"run": False, "mode": 0}
 tried = set()
+stats = {"n": 0, "found": 0, "last": "", "code": 0, "start": 0}
+
+HELP = (
+    "🎮 <b>بوت يوزرات PlayStation</b>\n"
+    f"{LINE}\n"
+    "🔹 /start4 ـ بحث الرباعي (٣ حروف + شخطة)\n"
+    "🔹 /start5 ـ بحث الخماسي (٤ حروف + شخطة)\n"
+    "🔹 /status ـ حالة البحث\n"
+    "🔹 /stop ـ إيقاف البحث\n"
+    "🔹 /test اسم ـ فحص يوزر واحد\n"
+    f"{LINE}\n"
+    "💡 البوت يرسل لك فقط اليوزرات المتاحة."
+)
+
 
 def send(chat, text):
-    requests.post(f"{TG}/sendMessage", json={"chat_id": chat, "text": text})
+    requests.post(f"{TG}/sendMessage",
+                  json={"chat_id": chat, "text": text, "parse_mode": "HTML"})
+
+
+def fmt_time(sec):
+    sec = int(sec)
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h} ساعة و {m} دقيقة"
+    if m:
+        return f"{m} دقيقة و {s} ثانية"
+    return f"{s} ثانية"
+
 
 def get_token():
     if token["v"] and time.time() < token["exp"]:
@@ -31,96 +59,8 @@ def get_token():
         headers={"Cookie": f"npsso={NPSSO}"}, allow_redirects=False)
     code = parse_qs(urlparse(r.headers.get("Location", "")).query).get("code")
     if not code:
-        raise Exception("الـ NPSSO ما اشتغل (غلط أو منتهي)")
+        raise Exception("الـ NPSSO ما اشتغل (غلط أو منتهي الصلاحية)")
     r = requests.post(
         "https://ca.account.sony.com/api/authz/v3/oauth/token",
         headers={"Authorization": f"Basic {BASIC}"},
         data={"code": code[0], "redirect_uri": REDIRECT,
-              "grant_type": "authorization_code",
-              "token_format": "jwt", "scope": SCOPE})
-    token["v"] = r.json()["access_token"]
-    token["exp"] = time.time() + 3000
-    return token["v"]
-
-def check(name):
-    r = requests.post(
-        "https://accounts.api.playstation.com/api/v1/accounts/onlineIds",
-        headers={"Authorization": f"Bearer {get_token()}"},
-        json={"onlineId": name, "reserveIfAvailable": False})
-    return r.status_code, r.text[:300]
-
-def available(status, text):
-    # قاعدة مؤقتة، نعدلها بعد ما نشوف نتيجة /test
-    return status in (200, 204)
-
-def make(n):
-    letters = [random.choice(string.ascii_lowercase) for _ in range(n)]
-    letters.insert(random.randint(1, n), random.choice("_-"))
-    return "".join(letters)
-
-def search(chat, n):
-    state["run"] = True
-    send(chat, f"بديت البحث ({n+1} خانات)")
-    while state["run"]:
-        name = make(n)
-        if name in tried:
-            continue
-        try:
-            status, text = check(name)
-        except Exception as e:
-            send(chat, f"خطأ: {e}")
-            time.sleep(60)
-            continue
-        if status == 429:
-            time.sleep(120)
-            continue
-        if status == 401:
-            token["exp"] = 0
-            continue
-        tried.add(name)
-        if available(status, text):
-            send(chat, f"✅ {name}")
-        time.sleep(DELAY)
-    send(chat, "وقفت البحث")
-
-def handle(m):
-    chat = m["chat"]["id"]
-    text = m.get("text", "")
-    if text == "/id":
-        return send(chat, f"رقمك: {chat}")
-    if chat != OWNER_ID:
-        return
-    if text.startswith("/test"):
-        parts = text.split()
-        if len(parts) < 2:
-            return send(chat, "اكتب: /test اسم")
-        try:
-            s, t = check(parts[1])
-            send(chat, f"{s}\n{t}")
-        except Exception as e:
-            send(chat, f"خطأ: {e}")
-    elif text == "/start4" and not state["run"]:
-        threading.Thread(target=search, args=(chat, 3), daemon=True).start()
-    elif text == "/start5" and not state["run"]:
-        threading.Thread(target=search, args=(chat, 4), daemon=True).start()
-    elif text == "/stop":
-        state["run"] = False
-
-class H(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
-
-threading.Thread(
-    target=lambda: HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 10000))), H).serve_forever(),
-    daemon=True).start()
-
-offset = 0
-while True:
-    try:
-        r = requests.get(f"{TG}/getUpdates", params={"offset": offset, "timeout": 30}, timeout=40).json()
-        for u in r.get("result", []):
-            offset = u["update_id"] + 1
-            if "message" in u:
-                handle(u["message"])
-    except Exception:
-        time.sleep(5)
