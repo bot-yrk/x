@@ -11,7 +11,7 @@ CID = "09515159-7237-4370-9b40-3806e67c0891"
 BASIC = base64.b64encode(f"{CID}:ucPjka5tntB2KqsP".encode()).decode()
 REDIRECT = "com.scee.psxandroid.scecompcall://redirect"
 SCOPE = "psn:mobile.v2.core psn:clientapp"
-DELAY = 5
+DELAY = 20
 LINE = "━━━━━━━━━━━━━━"
 
 token = {"v": None, "exp": 0}
