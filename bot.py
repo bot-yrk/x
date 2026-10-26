@@ -7,7 +7,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import telebot
 from psnawp_api import PSNAWP
-from psnawp_api.core.psnawp_exceptions import PSNAWPNotFound
+try:
+    from psnawp_api.core.psnawp_exceptions import PSNAWPNotFoundError as NotFound
+except ImportError:
+    from psnawp_api.core.psnawp_exceptions import PSNAWPNotFound as NotFound
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 NPSSO = os.environ["NPSSO"]
@@ -40,7 +43,7 @@ def is_available(name):
     try:
         psn.user(online_id=name)
         return False
-    except PSNAWPNotFound:
+    except NotFound:
         return True
 
 
