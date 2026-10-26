@@ -5,31 +5,44 @@ import string
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import requests
 import telebot
 from psnawp_api import PSNAWP
-try:
-    from psnawp_api.core.psnawp_exceptions import PSNAWPNotFoundError as NotFound
-except ImportError:
-    from psnawp_api.core.psnawp_exceptions import PSNAWPNotFound as NotFound
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 NPSSO = os.environ["NPSSO"]
-# أطوال اليوزر المطلوبة، مثال: "4,5"
 LENGTHS = [int(x) for x in os.environ.get("LENGTHS", "4,5").split(",")]
-# أقل وأكثر مدة انتظار بين كل فحص (بالثواني) عشان يكون بطيء وطبيعي
 MIN_PAUSE = float(os.environ.get("MIN_PAUSE", "4"))
 MAX_PAUSE = float(os.environ.get("MAX_PAUSE", "9"))
+
+# نفس فحص خانة تغيير الاسم في سوني (ما يحجز الاسم)
+CHECK_URL = "https://accounts.api.playstation.com/api/v1/accounts/onlineIds"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 psn = PSNAWP(NPSSO)
 
 LETTERS = string.ascii_lowercase
-running = {}  # chat_id -> True/False
+running = {}
 seen = set()
 
 
+class AuthError(Exception):
+    pass
+
+
+class RateLimit(Exception):
+    pass
+
+
+def get_token():
+    auth = getattr(psn, "authenticator", None)
+    token = getattr(auth, "access_token", None)
+    if not token:
+        raise AuthError("no token")
+    return token
+
+
 def make_name():
-    """حروف + شرطة وحدة (_ أو -) مو في أول اليوزر ولا آخره"""
     length = random.choice(LENGTHS)
     dash = random.choice(["_", "-"])
     dash_pos = random.randint(1, length - 2)
@@ -38,33 +51,51 @@ def make_name():
     return "".join(chars)
 
 
-def is_available(name):
-    """لو سوني ما لقت حساب بهذا الاسم يعني متاح"""
-    try:
-        psn.user(online_id=name)
-        return False
-    except NotFound:
-        return True
+def check(name):
+    """يرجع (متاح؟، الرد الخام)"""
+    r = requests.post(
+        CHECK_URL,
+        headers={
+            "Authorization": "Bearer " + get_token(),
+            "Content-Type": "application/json",
+        },
+        json={"onlineId": name, "reserveIfAvailable": False},
+        timeout=20,
+    )
+    raw = f"{r.status_code} {r.text[:300]}"
+    if r.status_code in (401, 403):
+        raise AuthError(raw)
+    if r.status_code == 429:
+        raise RateLimit(raw)
+    return r.status_code == 200, raw
 
 
 def hunt(chat_id):
     bot.send_message(chat_id, "بدأت البحث ✅ بأرسل لك بس المتاح.")
+    first = True
     while running.get(chat_id):
         name = make_name()
         if name in seen:
             continue
         seen.add(name)
         try:
-            if is_available(name):
+            ok, raw = check(name)
+            if first:
+                # رسالة تشخيص مرة وحدة عشان نتأكد من رد سوني
+                bot.send_message(chat_id, f"تشخيص ({name}): {raw}")
+                first = False
+            if ok:
                 bot.send_message(chat_id, f"متاح: {name}")
+        except AuthError as e:
+            bot.send_message(chat_id, f"مشكلة دخول (NPSSO أو التوكن): {e}")
+            running[chat_id] = False
+            return
+        except RateLimit:
+            time.sleep(90)
+            continue
         except Exception as e:
-            msg = str(e).lower()
-            if "npsso" in msg or "401" in msg or "unauthor" in msg:
-                bot.send_message(chat_id, "الـ NPSSO انتهى، جيب واحد جديد وحطه في Render.")
-                running[chat_id] = False
-                return
-            # غالباً ضغط من سوني، ننتظر دقيقة
-            time.sleep(60)
+            bot.send_message(chat_id, f"خطأ: {e}")
+            time.sleep(30)
             continue
         time.sleep(random.uniform(MIN_PAUSE, MAX_PAUSE))
 
