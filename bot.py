@@ -7,7 +7,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 import telebot
-from psnawp_api import PSNAWP
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 NPSSO = os.environ["NPSSO"]
@@ -19,7 +18,6 @@ MAX_PAUSE = float(os.environ.get("MAX_PAUSE", "9"))
 CHECK_URL = "https://accounts.api.playstation.com/api/v1/accounts/onlineIds"
 
 bot = telebot.TeleBot(BOT_TOKEN)
-psn = PSNAWP(NPSSO)
 
 LETTERS = string.ascii_lowercase
 running = {}
@@ -34,11 +32,49 @@ class RateLimit(Exception):
     pass
 
 
+_tok = {"value": None, "time": 0}
+AUTH_URL = "https://ca.account.sony.com/api/authz/v3/oauth/authorize"
+TOKEN_URL = "https://ca.account.sony.com/api/authz/v3/oauth/token"
+CLIENT_ID = "09515159-7237-4370-9b40-3806e67c0891"
+BASIC = "Basic MDk1MTUxNTktNzIzNy00MzcwLTliNDAtMzgwNmU2N2MwODkxOnVjUGprYTV0bnRCMktxc1A="
+REDIRECT = "com.scee.psxandroid.scecompcall://redirect"
+
+
 def get_token():
-    auth = getattr(psn, "authenticator", None)
-    token = getattr(auth, "access_token", None)
+    if _tok["value"] and time.time() - _tok["time"] < 2700:
+        return _tok["value"]
+    r = requests.get(
+        AUTH_URL,
+        params={
+            "access_type": "offline",
+            "client_id": CLIENT_ID,
+            "response_type": "code",
+            "scope": "psn:mobile.v2.core psn:clientapp",
+            "redirect_uri": REDIRECT,
+        },
+        headers={"Cookie": "npsso=" + NPSSO},
+        allow_redirects=False,
+        timeout=20,
+    )
+    loc = r.headers.get("Location", "")
+    if "code=" not in loc:
+        raise AuthError("NPSSO غلط أو منتهي، جيب واحد جديد")
+    code = loc.split("code=")[1].split("&")[0]
+    r = requests.post(
+        TOKEN_URL,
+        headers={"Authorization": BASIC, "Content-Type": "application/x-www-form-urlencoded"},
+        data={
+            "code": code,
+            "redirect_uri": REDIRECT,
+            "grant_type": "authorization_code",
+            "token_format": "jwt",
+        },
+        timeout=20,
+    )
+    token = r.json().get("access_token")
     if not token:
-        raise AuthError("no token")
+        raise AuthError("ما قدرت أجيب التوكن: " + r.text[:200])
+    _tok["value"], _tok["time"] = token, time.time()
     return token
 
 
@@ -63,7 +99,10 @@ def check(name):
         timeout=20,
     )
     raw = f"{r.status_code} {r.text[:300]}"
-    if r.status_code in (401, 403):
+    if r.status_code == 401:
+        _tok["value"] = None
+        raise RateLimit(raw)
+    if r.status_code == 403:
         raise AuthError(raw)
     if r.status_code == 429:
         raise RateLimit(raw)
