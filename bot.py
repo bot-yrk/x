@@ -11,8 +11,8 @@ import telebot
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 NPSSO = os.environ["NPSSO"]
 LENGTHS = [int(x) for x in os.environ.get("LENGTHS", "4,5").split(",")]
-MIN_PAUSE = float(os.environ.get("MIN_PAUSE", "4"))
-MAX_PAUSE = float(os.environ.get("MAX_PAUSE", "9"))
+MIN_PAUSE = float(os.environ.get("MIN_PAUSE", "8"))
+MAX_PAUSE = float(os.environ.get("MAX_PAUSE", "15"))
 
 # نفس فحص خانة تغيير الاسم في سوني (ما يحجز الاسم)
 CHECK_URL = "https://accounts.api.playstation.com/api/v1/accounts/onlineIds"
@@ -91,6 +91,10 @@ class Unknown(Exception):
     pass
 
 
+class Blocked(Exception):
+    pass
+
+
 last_report = {"t": 0}
 
 
@@ -102,7 +106,6 @@ def check(name):
             "Authorization": "Bearer " + get_token(),
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
         },
         json={"onlineId": name, "reserveIfAvailable": False},
         timeout=20,
@@ -116,7 +119,7 @@ def check(name):
         _tok["value"] = None
         raise Unknown(raw)
     if r.status_code == 403:
-        raise AuthError(raw)
+        raise Blocked(raw)
     if r.status_code == 429:
         raise RateLimit(raw)
     raise Unknown(raw)
@@ -136,6 +139,14 @@ def hunt(chat_id):
             bot.send_message(chat_id, f"مشكلة دخول (NPSSO أو التوكن): {e}")
             running[chat_id] = False
             return
+        except Blocked:
+            # سوني (الحماية حقتها) رفضت الطلب: ننتظر 10 دقايق ونرجع
+            seen.discard(name)
+            if time.time() - last_report["t"] > 600:
+                last_report["t"] = time.time()
+                bot.send_message(chat_id, "سوني رفضت الطلبات مؤقتاً (مو مشكلة NPSSO)، بانتظر 10 دقايق وأرجع.")
+            time.sleep(600)
+            continue
         except RateLimit:
             time.sleep(90)
             seen.discard(name)
