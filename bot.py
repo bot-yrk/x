@@ -105,7 +105,6 @@ def check(name):
         headers={
             "Authorization": "Bearer " + get_token(),
             "Content-Type": "application/json",
-            "Accept": "application/json",
         },
         json={"onlineId": name, "reserveIfAvailable": False},
         timeout=20,
