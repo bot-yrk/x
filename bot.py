@@ -87,43 +87,50 @@ def make_name():
     return "".join(chars)
 
 
+class Unknown(Exception):
+    pass
+
+
+last_report = {"t": 0}
+
+
 def check(name):
-    """يرجع (متاح؟، الرد الخام)"""
+    """يرجع True لو متاح، False لو مأخوذ. وأي رد غريب يرمي Unknown"""
     r = requests.post(
         CHECK_URL,
         headers={
             "Authorization": "Bearer " + get_token(),
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
         },
         json={"onlineId": name, "reserveIfAvailable": False},
         timeout=20,
     )
-    raw = f"{r.status_code} {r.text[:300]}"
+    raw = f"{r.status_code} {r.text[:150]}"
+    if r.status_code == 200:
+        return True
+    if r.status_code == 400 and "3101" in r.text:
+        return False
     if r.status_code == 401:
         _tok["value"] = None
-        raise RateLimit(raw)
+        raise Unknown(raw)
     if r.status_code == 403:
         raise AuthError(raw)
     if r.status_code == 429:
         raise RateLimit(raw)
-    return r.status_code == 200, raw
+    raise Unknown(raw)
 
 
 def hunt(chat_id):
     bot.send_message(chat_id, "بدأت البحث ✅ بأرسل لك بس المتاح.")
-    first = True
     while running.get(chat_id):
         name = make_name()
         if name in seen:
             continue
         seen.add(name)
         try:
-            ok, raw = check(name)
-            if first:
-                # رسالة تشخيص مرة وحدة عشان نتأكد من رد سوني
-                bot.send_message(chat_id, f"تشخيص ({name}): {raw}")
-                first = False
-            if ok:
+            if check(name):
                 bot.send_message(chat_id, f"متاح: {name}")
         except AuthError as e:
             bot.send_message(chat_id, f"مشكلة دخول (NPSSO أو التوكن): {e}")
@@ -131,9 +138,18 @@ def hunt(chat_id):
             return
         except RateLimit:
             time.sleep(90)
+            seen.discard(name)
+            continue
+        except Unknown as e:
+            # رد غريب من سوني: ما نعتبره متاح ولا مأخوذ، ننتظر ونعيد المحاولة
+            seen.discard(name)
+            if time.time() - last_report["t"] > 300:
+                last_report["t"] = time.time()
+                bot.send_message(chat_id, f"رد غريب من سوني، أنتظر شوي: {str(e)[:120]}")
+            time.sleep(45)
             continue
         except Exception as e:
-            bot.send_message(chat_id, f"خطأ: {e}")
+            seen.discard(name)
             time.sleep(30)
             continue
         time.sleep(random.uniform(MIN_PAUSE, MAX_PAUSE))
